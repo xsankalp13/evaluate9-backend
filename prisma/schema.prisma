@@ -1,0 +1,124 @@
+// prisma/schema.prisma
+// Prisma schema (Prisma v5 style - keep url in datasource)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  
+  url      = env("DATABASE_URL")
+  // If you use a direct URL for pooling providers, you can also add:
+  // directUrl = env("DIRECT_DATABASE_URL")
+}
+
+// 1. The Tenant (Organization/Startup)
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Configuration (Logo, Colors, etc.)
+  config    Json?    @db.JsonB
+
+  // Relations
+  users      User[]
+  tests      Test[]
+  candidates Candidate[]
+}
+
+// 2. Admins (Users managing the platform)
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  name      String?
+  role      Role     @default(ADMIN)
+  createdAt DateTime @default(now())
+  
+  // Multi-Tenancy
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+}
+
+// 3. The Evaluation Test Definitions
+model Test {
+  id          String   @id @default(uuid())
+  title       String
+  description String?
+  durationMin Int      @default(30)
+  
+  // AI Configuration for this specific test
+  botConfig   Json     @db.JsonB 
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Multi-Tenancy
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  
+  sessions    ExamSession[]
+}
+
+// 4. Candidates (The people taking the test)
+model Candidate {
+  id        String   @id @default(uuid())
+  email     String
+  name      String?
+  
+  // Unique token for accessing the exam
+  accessKey String   @unique @default(uuid())
+  
+  status    CandidateStatus @default(PENDING)
+  createdAt DateTime @default(now())
+
+  // Multi-Tenancy
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  
+  sessions  ExamSession[]
+
+  // Ensure email is unique PER TENANT (Same email can exist in different tenants)
+  @@unique([email, tenantId])
+}
+
+// 5. Exam Sessions (The actual run of a test)
+model ExamSession {
+  id          String   @id @default(uuid())
+  
+  startTime   DateTime?
+  endTime     DateTime?
+  status      SessionStatus @default(SCHEDULED)
+  
+  // Results
+  score       Float?
+  transcript  Json?    @db.JsonB // Full chat history
+  violations  Json?    @db.JsonB // Proctoring logs (tab switches, etc)
+
+  // Relations
+  testId      String
+  test        Test      @relation(fields: [testId], references: [id])
+  candidateId String
+  candidate   Candidate @relation(fields: [candidateId], references: [id])
+}
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+}
+
+enum CandidateStatus {
+  PENDING
+  INVITED
+  COMPLETED
+}
+
+enum SessionStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  TERMINATED
+}
