@@ -10,6 +10,7 @@ const app: Application = express();
 // Security Headers
 app.use(helmet()); 
 
+
 // CORS (Allow Frontend)
 app.use(cors({
     origin: process.env.CLIENT_URL || '*', 
