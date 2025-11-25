@@ -52,6 +52,10 @@ model Test {
   
   // AI Configuration for this specific test
   botConfig   Json     @db.JsonB 
+
+  // NEW: Store the pre-generated sets here
+  // Structure: [ { name: "Set A", questions: [...] }, { name: "Set B", ... } ]
+  questionSets Json?   @db.JsonB 
   
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

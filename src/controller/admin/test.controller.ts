@@ -55,7 +55,6 @@ export const createTest = async (req: Request, res: Response) => {
   }
 };
 
-// ... keep getTests as is ...
 export const getTests = async (req: Request, res: Response) => {
   try {
     const tenantId = req.tenantId!;
