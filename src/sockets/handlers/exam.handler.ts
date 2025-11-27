@@ -124,13 +124,16 @@ export const ExamHandler = (socket: Socket) => {
 
     const userMessage = payload.message;
     const currentQ = state.questions[state.currentIndex];
+    // EXTRACT TOKEN FROM SOCKET HANDSHAKE
+    const token = socket.handshake.auth.token;
 
     try {
       // 1. Evaluate Answer (RAG)
       const evalResult = await RagService.evaluateAnswer(
         socket.data.testId,
         currentQ.content,
-        userMessage
+        userMessage,
+        token
       );
 
       // 2. Update Transcript

@@ -5,72 +5,47 @@ export const TestService = {
   
   async createTest(tenantId: string, title: string, description: string, botConfig: any, durationMin: number) {
     return await db.test.create({
-      data: {
-        title,
-        description,
-        botConfig,
-        durationMin,
-        tenantId
-      }
+      data: { title, description, botConfig, durationMin, tenantId }
     });
   },
 
   async getTests(tenantId: string) {
-    return await db.test.findMany({
-      where: { tenantId },
-      orderBy: { createdAt: 'desc' }
-    });
+    return await db.test.findMany({ where: { tenantId }, orderBy: { createdAt: 'desc' } });
   },
 
-  async getTestById(tenantId: string, testId: string) {
-    const test = await db.test.findFirst({
-      where: { id: testId, tenantId }
-    });
-    if (!test) throw new Error('Test not found');
-    return test;
-  },
+  // --- SIMPLE VERSION (No Retry Loop) ---
+  async generateAndSaveQuestionSets(testId: string, token: string) {
+    console.log(`[TestService] Calling RAG to generate questions...`);
 
-  // --- NEW: Logic to Generate 60 Questions and Split ---
-  async generateAndSaveQuestionSets(testId: string) {
-    console.log(`[TestService] Generating 60 questions for Test: ${testId}`);
-
-    // 1. Call RAG to get 60 raw questions
-    // Note: Ensure your RAG API supports requesting this many
-    const ragResponse = await RagService.generateQuestions(testId, 60, 'medium');
-    let allQuestions = ragResponse.questions; // Expecting Array of objects
+    // 1. Call RAG (We expect this to work immediately now)
+    const ragResponse = await RagService.generateQuestions(testId, 60, 'medium', [], token);
+    const allQuestions = ragResponse.questions;
 
     if (!allQuestions || allQuestions.length === 0) {
-      throw new Error("RAG failed to return questions");
+        throw new Error("RAG returned empty questions list");
     }
 
-    // 2. Shuffle the array (Fisher-Yates Shuffle)
-    // This ensures topics are mixed and not sequential
+    // 2. Shuffle
     for (let i = allQuestions.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [allQuestions[i], allQuestions[j]] = [allQuestions[j], allQuestions[i]];
+        const j = Math.floor(Math.random() * (i + 1));
+        [allQuestions[i], allQuestions[j]] = [allQuestions[j], allQuestions[i]];
     }
 
-    // 3. Split into 3 Sets (approx 20 each)
-    // If we get fewer than 60, we split whatever we have into 3 chunks
+    // 3. Split
     const chunkSize = Math.ceil(allQuestions.length / 3);
-    
-    const setA = allQuestions.slice(0, chunkSize);
-    const setB = allQuestions.slice(chunkSize, chunkSize * 2);
-    const setC = allQuestions.slice(chunkSize * 2);
-
     const questionSets = [
-      { name: "Set A", questions: setA },
-      { name: "Set B", questions: setB },
-      { name: "Set C", questions: setC }
+        { name: "Set A", questions: allQuestions.slice(0, chunkSize) },
+        { name: "Set B", questions: allQuestions.slice(chunkSize, chunkSize * 2) },
+        { name: "Set C", questions: allQuestions.slice(chunkSize * 2) }
     ];
 
-    // 4. Save to Database
+    // 4. Save
     await db.test.update({
-      where: { id: testId },
-      data: { questionSets }
+        where: { id: testId },
+        data: { questionSets }
     });
 
-    console.log(`[TestService] Saved 3 Sets (A:${setA.length}, B:${setB.length}, C:${setC.length})`);
+    console.log(`[TestService] Saved ${allQuestions.length} questions into 3 sets.`);
     return questionSets;
   }
 };

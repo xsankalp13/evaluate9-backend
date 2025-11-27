@@ -3,54 +3,62 @@ import { TestService } from '../../services/test.service';
 import { RagService } from '../../services/rag.service';
 import fs from 'fs';
 
+// Small helper to give the Vector DB a moment to settle after ingestion
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export const createTest = async (req: Request, res: Response) => {
+  const uploadedFiles = (req.files as Express.Multer.File[]) || [];
+  
   try {
+    console.log("Creating Test... Files received:", uploadedFiles.length);
+
     const tenantId = req.tenantId!;
-    
-    // 1. Parse Data (When using Multer, body fields are strings)
-    // We need to JSON.parse the botConfig because it comes as a string in multipart-form
     const { title, description, durationMin } = req.body;
     let { botConfig } = req.body;
 
-    if (typeof botConfig === 'string') {
-      botConfig = JSON.parse(botConfig);
-    }
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) throw new Error("Authorization token missing");
 
-    if (!req.file) {
-      return res.status(400).json({ error: 'Question Bank PDF is required' });
-    }
+    if (uploadedFiles.length === 0) return res.status(400).json({ error: 'Question Bank PDF is required.' });
+    if (typeof botConfig === 'string') { try { botConfig = JSON.parse(botConfig); } catch (e) {} }
 
-    // 2. Create Test in Database (Status: PENDING until RAG confirms)
+    // 1. Create Test in DB
     const test = await TestService.createTest(
-      tenantId, 
-      title, 
-      description, 
-      botConfig, 
-      parseInt(durationMin) || 30
+      tenantId, title || "Untitled Test", description, botConfig || {}, parseInt(durationMin) || 30
     );
 
-    // 3. Trigger RAG Ingestion
-    // We pass the file path that Multer saved temporarily
-    await RagService.ingestKnowledgeBase(
-      tenantId,
-      test.id,
-      botConfig,
-      req.file.path
-    );
+    // 2. Start Ingestion (We AWAIT this, so it blocks until finished)
+    const filePaths = uploadedFiles.map(f => f.path);
+    console.log(`[Controller] Ingesting files for Test ${test.id}...`);
+    
+    // This line will wait the ~25 seconds for Python to finish
+    await RagService.ingestKnowledgeBase(tenantId, test.id, botConfig, filePaths, token);
+    
+    console.log(`[Controller] Ingestion Complete. Generating Questions...`);
 
-    // 4. Cleanup: Delete temp file
-    fs.unlinkSync(req.file.path);
+    // 3. Safety Delay (Optional but recommended)
+    // Even if Python finishes, sometimes the Database needs 1s to be queryable.
+    await wait(2000); 
+
+    // 4. Generate Questions
+    await TestService.generateAndSaveQuestionSets(test.id, token);
+
+    console.log(`[Controller] Done!`);
+
+    // 5. Cleanup
+    uploadedFiles.forEach(f => { if (fs.existsSync(f.path)) fs.unlinkSync(f.path); });
 
     res.status(201).json({ 
       success: true, 
-      message: 'Test created and Knowledge Base ingested successfully',
+      message: 'Test created and initialized successfully.',
       data: test 
     });
 
   } catch (error: any) {
-    // If RAG fails, we should technically delete the test we just created
-    // or mark it as "FAILED" in the DB.
-    if (req.file) fs.unlinkSync(req.file.path); // Ensure cleanup
+    uploadedFiles.forEach(f => { if (fs.existsSync(f.path)) fs.unlinkSync(f.path); });
+    console.error("Create Test Failed:", error.message);
+    // Return 500 so frontend knows it failed
     res.status(500).json({ success: false, error: error.message });
   }
 };

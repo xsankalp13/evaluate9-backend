@@ -2,6 +2,8 @@ import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import swaggerUi from 'swagger-ui-express'; // <--- Import
+import { swaggerSpec } from './config/swagger'; 
 import mainRoutes from './routes/index'; 
 
 const app: Application = express();
@@ -23,10 +25,13 @@ app.use(morgan('dev'));
 
 // Body Parsing
 app.use(express.json()); 
-
+app.use(express.urlencoded({ extended: true })); 
 // --- 2. Routes ---
 // Mount all API routes under /api/v1
 app.use('/api/v1', mainRoutes);
+
+// Accessible at http://localhost:4000/api-docs
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // --- 3. Health Check ---
 app.get('/health', (req: Request, res: Response) => {
