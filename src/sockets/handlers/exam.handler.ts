@@ -1,21 +1,26 @@
 import { Socket } from 'socket.io';
+import { v4 as uuidv4 } from 'uuid';
 import { RagService } from '../../services/rag.service';
 import { db } from '../../config/db';
 import { redisClient } from '../../config/redis';
 
-// The state object we will save to Redis
-interface ExamState {
-  questions: any[];
-  currentIndex: number;
-  isFinished: boolean;
-  transcript: any[];
+// TTL: 2 hours
+const SESSION_TTL = 7200; 
+
+interface QuestionItem {
+  id: string;
+  content: string;
 }
 
-// TTL: 2 hours (in seconds) - Session expires if inactive
-const SESSION_TTL = 7200; 
+interface ExamState {
+  questions: QuestionItem[]; // Full list of questions with IDs
+  isFinished: boolean;
+  startTime: string;
+}
 
 export const ExamHandler = (socket: Socket) => {
   const sessionId = socket.data.sessionId;
+  const testId = socket.data.testId;
 
   // --- Redis Helpers ---
   const getRedisKey = () => `session:${sessionId}`;
@@ -26,85 +31,69 @@ export const ExamHandler = (socket: Socket) => {
   };
 
   const saveState = async (state: ExamState) => {
-    await redisClient.set(getRedisKey(), JSON.stringify(state), {
-        EX: SESSION_TTL
-    });
+    await redisClient.set(getRedisKey(), JSON.stringify(state), { EX: SESSION_TTL });
   };
 
-  const clearState = async () => {
-    await redisClient.del(getRedisKey());
-  };
+  const clearState = async () => { await redisClient.del(getRedisKey()); };
 
-  // --- Event: Start / Resume Interview ---
+  // --- EVENT: START_INTERVIEW (Batch Flow) ---
   socket.on('start_interview', async () => {
     try {
-      console.log(`[Exam] Start/Resume requested for Session: ${sessionId}`);
+      console.log(`[Exam] Start Batch requested for Session: ${sessionId}`);
       
-      // 1. Check Redis for active state (Resume Logic)
+      // 1. Check Redis for existing state (Resume logic)
       let state = await getState();
 
       if (state) {
-        console.log(`[Exam] Resuming from Redis. Question ${state.currentIndex + 1}/${state.questions.length}`);
-        
-        // If finished, just send the end message
         if (state.isFinished) {
-             socket.emit('receive_message', { sender: 'AI', message: "The interview is already completed.", timestamp: new Date() });
+             socket.emit('interview_finished', { message: "The interview is already completed." });
              return;
         }
-
-        // Re-send the current question to the UI
-        const currentQ = state.questions[state.currentIndex];
-        socket.emit('receive_message', {
-            sender: 'AI',
-            message: `(Resuming) ${currentQ.content}`,
-            timestamp: new Date()
-        });
+        // Resend the full list of questions
+        console.log(`[Exam] Resuming session with ${state.questions.length} questions`);
+        socket.emit('init_questions', { questions: state.questions });
         return;
       }
 
-      // 2. If no Redis state, Cold Start (Fetch from DB)
+      // 2. Cold Start: Fetch from DB
       const session = await db.examSession.findUnique({
         where: { id: sessionId },
         include: { test: true }
       });
 
       if (!session || !session.test.questionSets) {
-        socket.emit('error', { message: 'Test data not found.' });
+        socket.emit('error', { message: 'Test data not found or questions not generated.' });
         return;
       }
 
-      // 3. Pick a Random Set
+      // 3. Pick Random Set & Assign UUIDs
+      // We assume questionSets is an array of objects
       const sets = session.test.questionSets as any[]; 
-      const randomSetIndex = Math.floor(Math.random() * sets.length);
-      const selectedSet = sets[randomSetIndex];
-
-      console.log(`[Exam] Initialized new session with ${selectedSet.name}`);
+      const selectedSet = sets[Math.floor(Math.random() * sets.length)];
+      
+      // Map questions to include a UUID
+      const questionsWithIds: QuestionItem[] = selectedSet.questions.map((q: any) => ({
+        id: uuidv4(), // Generate ID for tracking
+        content: q.content
+      }));
 
       // 4. Initialize State
       state = {
-        questions: selectedSet.questions,
-        currentIndex: 0,
+        questions: questionsWithIds,
         isFinished: false,
-        transcript: []
+        startTime: new Date().toISOString()
       };
 
-      // 5. Save to Redis
       await saveState(state);
 
-      // 6. Send First Question
-      if (state.questions.length > 0) {
-        socket.emit('receive_message', {
-          sender: 'AI',
-          message: state.questions[0].content,
-          timestamp: new Date()
-        });
+      // 5. Emit Full List to Client
+      socket.emit('init_questions', { questions: state.questions });
 
-        // Update DB status to IN_PROGRESS
-        await db.examSession.update({
-          where: { id: sessionId },
-          data: { status: 'IN_PROGRESS', startTime: new Date() }
-        });
-      }
+      // Update DB status
+      await db.examSession.update({
+        where: { id: sessionId },
+        data: { status: 'IN_PROGRESS', startTime: new Date() }
+      });
 
     } catch (error) {
       console.error('Start Error:', error);
@@ -112,90 +101,77 @@ export const ExamHandler = (socket: Socket) => {
     }
   });
 
-  // --- Event: User Answer ---
-  socket.on('send_message', async (payload) => {
-    // Always fetch fresh state from Redis
-    let state = await getState();
-
+  // --- EVENT: SUBMIT_BATCH (New Handler) ---
+  socket.on('submit_batch', async (payload: { answers: Record<string, string> }) => {
+    console.log(`[Exam] Batch submission received for Session: ${sessionId}`);
+    
+    // 1. Retrieve State
+    const state = await getState();
     if (!state || state.isFinished) {
-        console.warn(`[Exam] Ignored message for finished/invalid session ${sessionId}`);
+        console.warn(`[Exam] Ignored submission for invalid/finished session`);
         return;
     }
 
-    const userMessage = payload.message;
-    const currentQ = state.questions[state.currentIndex];
-    // EXTRACT TOKEN FROM SOCKET HANDSHAKE
+    const userAnswers = payload.answers || {};
     const token = socket.handshake.auth.token;
 
     try {
-      // 1. Evaluate Answer (RAG)
-      const evalResult = await RagService.evaluateAnswer(
-        socket.data.testId,
-        currentQ.content,
-        userMessage,
-        token
-      );
+        // 2. Parallel Evaluation
+        // We map over the stored questions to ensure we evaluate exactly what was assigned
+        const evaluationPromises = state.questions.map(async (q) => {
+            const userAnswer = userAnswers[q.id] || "No Answer Provided";
+            
+            // Call RAG Service
+            const evalResult = await RagService.evaluateAnswer(
+                testId,
+                q.content,
+                userAnswer,
+                token
+            );
 
-      // 2. Update Transcript
-      state.transcript.push({
-        question: currentQ.content,
-        answer: userMessage,
-        evaluation: evalResult.answer 
-      });
-
-      // 3. Advance Index
-      state.currentIndex++;
-
-      // 4. Save Progress to Redis
-      await saveState(state);
-
-      // 5. Next Step Logic
-      if (state.currentIndex < state.questions.length) {
-        // CASE: Next Question
-        const nextQ = state.questions[state.currentIndex];
-        
-        setTimeout(() => {
-          socket.emit('receive_message', {
-            sender: 'AI',
-            message: nextQ.content,
-            timestamp: new Date()
-          });
-        }, 1000);
-
-      } else {
-        // CASE: Finish Exam
-        state.isFinished = true;
-        await saveState(state); // Save finished flag
-        
-        const finalMessage = "Thank you. That concludes the evaluation.";
-        socket.emit('receive_message', { sender: 'AI', message: finalMessage, timestamp: new Date() });
-        socket.emit('interview_finished');
-
-        // Flush to Postgres
-        await db.examSession.update({
-          where: { id: sessionId },
-          data: { 
-            status: 'COMPLETED',
-            endTime: new Date(),
-            transcript: state.transcript,
-            score: calculateAverageScore(state.transcript)
-          }
+            // Structure the transcript item
+            return {
+                questionId: q.id,
+                question: q.content,
+                answer: userAnswer,
+                evaluation: evalResult.answer, // RAG Score & Feedback
+                ai_analysis: evalResult.ai_check || null
+            };
         });
 
-        // Optional: Clear Redis after DB sync (or keep it for a while to allow viewing results)
+        // Wait for all evaluations to complete
+        const transcript = await Promise.all(evaluationPromises);
+
+        // 3. Calculate Final Stats
+        const totalScore = transcript.reduce((sum, item) => sum + (item.evaluation?.overall_score || 0), 0);
+        const finalScore = totalScore / transcript.length;
+
+        console.log(`[Exam] Evaluation Complete. Score: ${finalScore.toFixed(2)}%`);
+
+        // 4. Persist to Postgres
+        await db.examSession.update({
+            where: { id: sessionId },
+            data: {
+                status: 'COMPLETED',
+                score: finalScore,
+                transcript: transcript, // Save full detailed report
+                endTime: new Date()
+            }
+        });
+
+        // 5. Cleanup Redis
         await clearState();
-      }
+
+        // 6. Notify Client
+        socket.emit('interview_finished', { message: "Evaluation submitted successfully." });
 
     } catch (error) {
-      console.error('Eval Error:', error);
-      socket.emit('error', { message: 'Error evaluating answer.' });
+        console.error('[Exam] Batch Evaluation Failed:', error);
+        socket.emit('error', { message: "Failed to process submission. Please try again." });
     }
   });
-};
 
-// Helper
-function calculateAverageScore(transcript: any[]) {
-  if (transcript.length === 0) return 0;
-  const total = transcript.reduce((sum, item) => sum + (item.evaluation?.overall_score || 0), 0);
-  return total / transcript.length;
-}
+  // --- DEPRECATED: Old Chat Handler ---
+  // socket.on('send_message', () => { ... }) 
+  // Removed to enforce batch flow.
+};
