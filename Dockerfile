@@ -51,10 +51,16 @@ COPY --from=builder /app/prisma ./prisma
 # (Necessary if npx tries to download migration engines)
 RUN chown -R expressjs:nodejs /app/node_modules
 RUN chown -R expressjs:nodejs /app/prisma
+# Copy the script
+COPY entrypoint.sh ./
+# Make it executable (Critical!)
+RUN chmod +x entrypoint.sh
 
 # Switch to non-root user
 USER expressjs
 
 EXPOSE 4000
 
+# Set Entrypoint
+ENTRYPOINT ["./entrypoint.sh"]
 CMD ["node", "dist/server.js"]
