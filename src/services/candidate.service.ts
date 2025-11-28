@@ -57,5 +57,18 @@ export const CandidateService = {
         candidate: true // Join candidate details
       }
     });
+  },
+
+  async getSessionById(tenantId: string, sessionId: string) {
+    return await db.examSession.findFirst({
+      where: { 
+        id: sessionId,
+        test: { tenantId } // Security: Ensure session belongs to tenant
+      },
+      include: {
+        candidate: true,
+        test: true
+      }
+    });
   }
 };

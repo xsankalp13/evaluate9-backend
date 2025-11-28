@@ -90,3 +90,17 @@ export const bulkUpload = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+export const getCandidateSession = async (req: Request, res: Response) => {
+  try {
+    const tenantId = req.tenantId!;
+    const { sessionId } = req.params;
+
+    const session = await CandidateService.getSessionById(tenantId, sessionId);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+
+    res.status(200).json({ success: true, data: session });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};

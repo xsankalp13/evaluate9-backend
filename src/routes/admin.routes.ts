@@ -41,5 +41,6 @@ router.get('/tests', TestController.getTests);
 router.post('/candidates', CandidateController.addCandidate);
 router.post('/candidates/bulk', upload.single('file'), CandidateController.bulkUpload); 
 router.get('/candidates/:testId', CandidateController.listCandidates);
+router.get('/session/:sessionId', CandidateController.getCandidateSession);
 
 export default router;

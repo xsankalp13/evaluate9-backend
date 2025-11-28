@@ -14,6 +14,8 @@ interface QuestionItem {
 
 interface ExamState {
   questions: QuestionItem[]; // Full list of questions with IDs
+  answers: Record<string, string>; // <--- Stores user answers
+  currentIndex: number;            // <--- Stores current question index
   isFinished: boolean;
   startTime: string;
 }
@@ -36,7 +38,7 @@ export const ExamHandler = (socket: Socket) => {
 
   const clearState = async () => { await redisClient.del(getRedisKey()); };
 
-  // --- EVENT: START_INTERVIEW (Batch Flow) ---
+  // --- EVENT: START_INTERVIEW (Batch Flow + Resume Support) ---
   socket.on('start_interview', async () => {
     try {
       console.log(`[Exam] Start Batch requested for Session: ${sessionId}`);
@@ -49,9 +51,13 @@ export const ExamHandler = (socket: Socket) => {
              socket.emit('interview_finished', { message: "The interview is already completed." });
              return;
         }
-        // Resend the full list of questions
+        // RESUME: Send back the full list AND saved progress
         console.log(`[Exam] Resuming session with ${state.questions.length} questions`);
-        socket.emit('init_questions', { questions: state.questions });
+        socket.emit('init_questions', { 
+            questions: state.questions,
+            savedAnswers: state.answers || {},      // <--- Restore Answers
+            savedIndex: state.currentIndex || 0     // <--- Restore Index
+        });
         return;
       }
 
@@ -67,11 +73,9 @@ export const ExamHandler = (socket: Socket) => {
       }
 
       // 3. Pick Random Set & Assign UUIDs
-      // We assume questionSets is an array of objects
       const sets = session.test.questionSets as any[]; 
       const selectedSet = sets[Math.floor(Math.random() * sets.length)];
       
-      // Map questions to include a UUID
       const questionsWithIds: QuestionItem[] = selectedSet.questions.map((q: any) => ({
         id: uuidv4(), // Generate ID for tracking
         content: q.content
@@ -80,6 +84,8 @@ export const ExamHandler = (socket: Socket) => {
       // 4. Initialize State
       state = {
         questions: questionsWithIds,
+        answers: {},        // <--- Initialize empty
+        currentIndex: 0,    // <--- Initialize start
         isFinished: false,
         startTime: new Date().toISOString()
       };
@@ -87,7 +93,11 @@ export const ExamHandler = (socket: Socket) => {
       await saveState(state);
 
       // 5. Emit Full List to Client
-      socket.emit('init_questions', { questions: state.questions });
+      socket.emit('init_questions', { 
+          questions: state.questions,
+          savedAnswers: {},
+          savedIndex: 0
+      });
 
       // Update DB status
       await db.examSession.update({
@@ -101,7 +111,21 @@ export const ExamHandler = (socket: Socket) => {
     }
   });
 
-  // --- EVENT: SUBMIT_BATCH (New Handler) ---
+  // --- NEW EVENT: SAVE_PROGRESS ---
+  // Called by frontend whenever user clicks "Next"
+  socket.on('save_progress', async (data: { answer: string, questionId: string, index: number }) => {
+      const state = await getState();
+      if (!state || state.isFinished) return;
+
+      // Update State
+      state.answers[data.questionId] = data.answer;
+      state.currentIndex = data.index;
+
+      // Save to Redis (Silent background save)
+      await saveState(state);
+  });
+
+  // --- EVENT: SUBMIT_BATCH ---
   socket.on('submit_batch', async (payload: { answers: Record<string, string> }) => {
     console.log(`[Exam] Batch submission received for Session: ${sessionId}`);
     
@@ -112,12 +136,12 @@ export const ExamHandler = (socket: Socket) => {
         return;
     }
 
-    const userAnswers = payload.answers || {};
+    // Use answers from Redis (reliable) OR payload (fallback)
+    const userAnswers = state.answers || payload.answers || {};
     const token = socket.handshake.auth.token;
 
     try {
         // 2. Parallel Evaluation
-        // We map over the stored questions to ensure we evaluate exactly what was assigned
         const evaluationPromises = state.questions.map(async (q) => {
             const userAnswer = userAnswers[q.id] || "No Answer Provided";
             
@@ -129,7 +153,6 @@ export const ExamHandler = (socket: Socket) => {
                 token
             );
 
-            // Structure the transcript item
             return {
                 questionId: q.id,
                 question: q.content,
@@ -170,8 +193,4 @@ export const ExamHandler = (socket: Socket) => {
         socket.emit('error', { message: "Failed to process submission. Please try again." });
     }
   });
-
-  // --- DEPRECATED: Old Chat Handler ---
-  // socket.on('send_message', () => { ... }) 
-  // Removed to enforce batch flow.
 };
