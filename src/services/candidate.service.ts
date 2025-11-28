@@ -70,5 +70,20 @@ export const CandidateService = {
         test: true
       }
     });
+  },
+  async getAllCandidates(tenantId: string) {
+    return await db.candidate.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        sessions: {
+          select: {
+            status: true,
+            score: true,
+            test: { select: { title: true } }
+          }
+        }
+      }
+    });
   }
 };

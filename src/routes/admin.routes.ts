@@ -40,6 +40,7 @@ router.get('/tests', TestController.getTests);
 // --- Candidate Management ---
 router.post('/candidates', CandidateController.addCandidate);
 router.post('/candidates/bulk', upload.single('file'), CandidateController.bulkUpload); 
+router.get('/candidates', CandidateController.getAllCandidates);
 router.get('/candidates/:testId', CandidateController.listCandidates);
 router.get('/session/:sessionId', CandidateController.getCandidateSession);
 

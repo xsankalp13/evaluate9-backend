@@ -104,3 +104,13 @@ export const getCandidateSession = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+export const getAllCandidates = async (req: Request, res: Response) => {
+  try {
+    const tenantId = req.tenantId!;
+    const candidates = await CandidateService.getAllCandidates(tenantId);
+    res.status(200).json({ success: true, data: candidates });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
