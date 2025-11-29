@@ -18,6 +18,8 @@ interface ExamState {
   startTime: string;
 }
 
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 export const ExamHandler = (socket: Socket) => {
   const sessionId = socket.data.sessionId;
   const testId = socket.data.testId;
@@ -119,6 +121,7 @@ export const ExamHandler = (socket: Socket) => {
         // We use a batch size of 5 to avoid rate limiting
         const transcript: any[] = [];
         const BATCH_SIZE = 1;
+        const DELAY_MS = 20000; // 20 Seconds Delay
 
         for (let i = 0; i < state.questions.length; i += BATCH_SIZE) {
             const batch = state.questions.slice(i, i + BATCH_SIZE);
@@ -148,6 +151,11 @@ export const ExamHandler = (socket: Socket) => {
             // Wait for this batch to complete before moving to the next
             const batchResults = await Promise.all(batchPromises);
             transcript.push(...batchResults);
+
+            if (i + BATCH_SIZE < state.questions.length) {
+                console.log(`[Exam] ⏳ Rate Limit: Waiting ${DELAY_MS / 1000}s before next batch...`);
+                await wait(DELAY_MS);
+            }
         }
 
         // 3. Calculate Final Stats
