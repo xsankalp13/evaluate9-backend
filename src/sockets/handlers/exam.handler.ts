@@ -158,7 +158,8 @@ export const ExamHandler = (socket: Socket) => {
                 question: q.content,
                 answer: userAnswer,
                 evaluation: evalResult.answer, // RAG Score & Feedback
-                ai_analysis: evalResult.ai_check || null
+                ai_analysis: evalResult.ai_check || null,
+                ai_score: evalResult.ai_score
             };
         });
 
