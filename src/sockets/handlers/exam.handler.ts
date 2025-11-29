@@ -118,7 +118,7 @@ export const ExamHandler = (socket: Socket) => {
         // 2. Parallel Evaluation in Batches
         // We use a batch size of 5 to avoid rate limiting
         const transcript: any[] = [];
-        const BATCH_SIZE = 5;
+        const BATCH_SIZE = 1;
 
         for (let i = 0; i < state.questions.length; i += BATCH_SIZE) {
             const batch = state.questions.slice(i, i + BATCH_SIZE);
